@@ -20,14 +20,30 @@
 
 #include "lcd.h"
 
+
 static void lcd_gpio(void);
 static void lcd_data_line(uint8_t data);
-static void lcd_rs_pin(uint8_t rs);
-static void lcd_rw_pin(uint8_t rw);
-static void lcd_en_pin(void);
 static void lcd_print_char(char data);
 static void lcd_cmd(uint8_t cmd);
 static void lcd_busy_wait(uint32_t delay);
+
+#if ( USE_LCD_I2C )
+
+static void lcd_i2c_config(void);
+static void lcd_i2c_cmd(uint8_t data);
+static void lcd_i2c_start(void);
+static void lcd_i2c_stop(void);
+static void lcd_i2c_write_data(uint8_t data);
+static void lcd_i2c_write_addr(uint8_t slave_w_addr);
+static uint8_t backlight_state = 0x08;
+
+#else
+
+static void lcd_rs_pin(uint8_t rs);
+static void lcd_rw_pin(uint8_t rw);
+static void lcd_en_pin(void);
+
+#endif
 
 
 
@@ -40,6 +56,25 @@ void lcd_init(void)
 {
     /* Initialize LCD GPIO pins */
     lcd_gpio();
+
+    #if ( USE_LCD_I2C )
+
+    /* initialize the i2c peripheral */
+    lcd_i2c_config();
+    
+    /* LCD initialization sequence */
+    lcd_busy_wait(100);
+
+    lcd_cmd(0x03);
+    lcd_busy_wait(20);
+
+    lcd_cmd(0x03);
+    lcd_busy_wait(300);
+
+    lcd_cmd(0x03);
+    lcd_cmd(0x02);
+
+    #else
 
     /* LCD initialization sequence */
     lcd_busy_wait(100);
@@ -54,6 +89,8 @@ void lcd_init(void)
 
     lcd_data_line(0x03);
     lcd_data_line(0x02);
+    
+    #endif
 
     /* Function set */
     lcd_cmd(0x28);
@@ -72,6 +109,29 @@ void lcd_init(void)
 
 }
 
+#if ( USE_LCD_I2C )
+
+/**
+ * @brief    LCD function to turn on/off the backlight
+ * @param    state: Off (0), On (1)
+ * @retval   none
+ */
+void lcd_backlight(uint8_t state)
+{
+    if(state)
+    {
+        backlight_state = 0x08;
+        lcd_i2c_cmd(0x00);
+    }
+    else
+    {
+        backlight_state = 0x00;
+        lcd_i2c_cmd(0x00);
+    }
+}
+
+#endif
+
 
 /**
  * @brief    LCD function to clear the entire display and sets the cursor to row 1, col 1
@@ -87,8 +147,8 @@ void lcd_clear(void)
 
 /**
  * @brief    LCD Function to move the cursor on the display
- * @param    row: either 1 for first row, or 2 for second row
- * @param    col: any values from 1-16
+ * @param    row: First row (1), second row (2)
+ * @param    col: any value from 1-16
  * @retval   none
  */
 void lcd_goto_xy(uint8_t row, uint8_t col)
@@ -137,21 +197,6 @@ void lcd_display_ctrl(uint8_t display, uint8_t cursor, uint8_t blinking)
 
 
 /**
- * @brief    LCD function to print a string of characters to LCD
- * @param    str: pointer to array of characters
- * @retval   none
- */
-void lcd_print_string(char *str)
-{
-    for(uint8_t i = 0; str[i] != '\0'; i++)
-    {
-        lcd_print_char(str[i]);
-    }
-}
-
-
-
-/**
  * @brief    LCD function to shift the entire display
  * @param    dir: 1 to shift display to right, 0 to left
  * @retval   none
@@ -170,40 +215,71 @@ void lcd_shift_display(uint8_t dir)
 
 
 /**
+ * @brief    LCD function to print a string of characters to LCD
+ * @param    str: pointer to array of characters
+ * @retval   none
+ */
+void lcd_print_string(char *str)
+{
+    for(uint8_t i = 0; str[i] != '\0'; i++)
+    {
+        lcd_print_char(str[i]);
+    }
+}
+
+
+/**
  * @brief    Static function to print a single character to LCD
  * @param    ch: character to be printed
  * @retval   none
  */
 static void lcd_print_char(char ch)
 {
+    #if ( USE_LCD_I2C )
+
+    lcd_data_line( (ch & 0xF0) | 0x01 );
+    lcd_data_line( (ch << 4) | 0x01 );
+
+    #else
+
     lcd_rs_pin(1);
     lcd_rw_pin(0);
     lcd_data_line(ch >> 4);
     lcd_data_line(ch & 0x0f);
+
+    #endif
 }
 
 
 /**
- * @brief    Static function to issue a command to LCD
- * @param    cmd: 8 bit data command. See the datasheet for more information.
- * @retval   none
- */
-static void lcd_cmd(uint8_t cmd)
-{
-    lcd_rs_pin(0);
-    lcd_rw_pin(0);
-    lcd_data_line(cmd >> 4);
-    lcd_data_line(cmd & 0x0f);
-}
-
-
-/**
- * @brief    Static function to configure PA<7:1> to be used by the LCD
+ * @brief    Function to configure PA<7:1> to be used by the LCD
+ *           or PB<7:6> for SDA/SCL if I2C is used
  * @param    none
  * @retval   none
  */
 static void lcd_gpio(void)
 {
+    #if ( USE_LCD_I2C )
+
+    RCC->APB1ENR |= RCC_APB1ENR_I2C1EN;
+    RCC->APB2ENR |= ( RCC_APB2ENR_AFIOEN | RCC_APB2ENR_IOPBEN );
+
+    /* PB6 - SCL, PB7 - SDA  */
+    /* Alternate function output Open-drain, 50 MHz */
+
+    GPIOB->CRL &= ~( GPIO_CRL_CNF6_1 | GPIO_CRL_CNF6_0 |
+                     GPIO_CRL_MODE6_1 | GPIO_CRL_MODE6_0 );
+
+    GPIOB->CRL &= ~( GPIO_CRL_CNF7_1 | GPIO_CRL_CNF7_0 |
+                     GPIO_CRL_MODE7_1 | GPIO_CRL_MODE7_0 );
+
+    GPIOB->CRL |= ( GPIO_CRL_CNF6_1 | GPIO_CRL_CNF6_0 | GPIO_CRL_MODE6_1 | GPIO_CRL_MODE6_0 );
+    GPIOB->CRL |= ( GPIO_CRL_CNF7_1 | GPIO_CRL_CNF7_0 | GPIO_CRL_MODE7_1 | GPIO_CRL_MODE7_0 );
+
+    GPIOB->BSRR |= ( GPIO_BSRR_BS6 | GPIO_BSRR_BS7 );
+
+    #else
+    
     RCC->APB2ENR |= RCC_APB2ENR_IOPAEN;
 
     for(uint8_t i = 0; i < 28; i += 4)
@@ -221,16 +297,53 @@ static void lcd_gpio(void)
         /* Reset PA<7:1> */
         GPIOA->BSRR |= (1 << (17UL + i));
     }
+
+    #endif
 }
 
 
 /**
- * @brief    Static function that extracts the lower nibble of 8-bit data
+ * @brief    Function to issue a command to LCD
+ * @param    cmd: 8 bit data command. See the datasheet for more information.
+ * @retval   none
+ */
+static void lcd_cmd(uint8_t cmd)
+{
+    #if ( USE_LCD_I2C )
+
+    lcd_data_line(cmd & 0xF0);
+    lcd_data_line( (cmd << 4));
+    
+    #else
+    
+    lcd_rs_pin(0);
+    lcd_rw_pin(0);
+    lcd_data_line(cmd >> 4);
+    lcd_data_line(cmd & 0x0f);
+    
+    #endif
+}
+
+
+/**
+ * @brief    Function that extracts the lower nibble of 8-bit data
+ *           and handles the latching of data by toggling the EN pin.
+ *           When in I2C mode this function only handles the toggling
+ *           of EN pin by shifting values to bit 3 (bit position of EN
+ *           pin)
  * @param    data: 8-bit data where the first nibble will be extracted
  * @retval   none
  */
 static void lcd_data_line(uint8_t data)
 {
+    #if ( USE_LCD_I2C )
+
+    lcd_i2c_cmd(data | (1 << 2));
+    lcd_i2c_cmd(data | (0 << 2));
+    lcd_busy_wait(300);
+
+    #else
+
     for(uint8_t i = 0; i < 4; i++ )
     {
         uint8_t tmp = ((data >> i) & 0x01);
@@ -245,8 +358,100 @@ static void lcd_data_line(uint8_t data)
         }
     }
     lcd_en_pin();
+
+    #endif
 }
 
+
+#if ( USE_LCD_I2C )
+
+/**
+ * @brief    Function that directly communicate to PCF8574
+ * @param    data: 8-bit data to be transmitted via I2C line
+ * @retval   none
+ */
+static void lcd_i2c_cmd(uint8_t data)
+{
+    lcd_i2c_start();
+    lcd_i2c_write_addr(LCD_SLAVE_W_ADDR);
+    lcd_i2c_write_data(data | backlight_state);
+    lcd_i2c_stop();
+}
+
+
+/**
+ * @brief    I2C function to initiate a start condition
+ * @param    none
+ * @retval   none
+ */
+static void lcd_i2c_start(void)
+{
+    I2C1->CR1 |= I2C_CR1_START;
+}
+
+
+/**
+ * @brief    I2C function to transmit the slave address
+ * @param    slave_w_addr: pre-shifted slave address with last bit set
+ * @retval   none
+ */
+static void lcd_i2c_write_addr(uint8_t slave_w_addr)
+{
+    while( !(I2C1->SR1 & I2C_SR1_SB) );
+
+    I2C1->DR = slave_w_addr;
+    while( !((I2C1->SR1 & I2C_SR1_ADDR)) );
+    I2C1->SR2 = I2C1->SR2;
+}
+
+
+/**
+ * @brief    I2C function that transmit the data after slave acknowledges the call
+ * @param    data: 8-bit data to be transmitted via I2C line
+ * @retval   none
+ */
+static void lcd_i2c_write_data(uint8_t data)
+{
+    while ( !(I2C1->SR1 & I2C_SR1_TXE ));
+    I2C1->DR = data;
+}
+
+
+/**
+ * @brief    I2C function to stop the communication
+ * @param    none
+ * @retval   none
+ */
+static void lcd_i2c_stop(void)
+{
+    I2C1->CR1 |= I2C_CR1_STOP;
+}
+
+
+/**
+ * @brief    Function that configures the I2C peripheral
+ * @param    none
+ * @retval   none
+ */
+static void lcd_i2c_config(void)
+{
+    I2C1->CR1 |= I2C_CR1_SWRST;
+    I2C1->CR1 &= ~( I2C_CR1_SWRST );
+    
+    /* Peripheral clock frequency 36 MHz */
+    I2C1->CR2 = 36;
+
+    /* Configure I2C SCL to 100 KHz */
+    I2C1->CCR = 180;
+
+    /* Configure SCL rise time */
+    I2C1->TRISE = 37;
+
+    /* Enable I2C1 */
+    I2C1->CR1 |= I2C_CR1_PE;
+}
+
+#else
 
 /**
  * @brief    Static function that controls the state of RS pin of LCD
@@ -255,6 +460,7 @@ static void lcd_data_line(uint8_t data)
  */
 static void lcd_rs_pin(uint8_t rs)
 {
+
     if(rs)
     {
         GPIOA->BSRR |= GPIO_BSRR_BS1;
@@ -263,6 +469,7 @@ static void lcd_rs_pin(uint8_t rs)
     {
         GPIOA->BSRR |= GPIO_BSRR_BR1;
     }
+
 }
 
 
@@ -296,6 +503,8 @@ static void lcd_en_pin(void)
     GPIOA->BSRR |= GPIO_BSRR_BR3;
     lcd_busy_wait(100);
 }
+
+#endif
 
 
 /**

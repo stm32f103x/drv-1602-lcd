@@ -26,7 +26,6 @@ void delay(uint32_t del)
 int main()
 {
     lcd_init();
-
     lcd_print_string("16x2 LCD Test");
     delay(DELAY_VAL);
     lcd_clear();
@@ -82,6 +81,16 @@ int main()
         for(uint8_t i = 0; i < 16; i++)
         {
             lcd_shift_display(0);
+            delay(1000000);
+        }
+        lcd_clear();
+
+        lcd_print_string("Back light test");
+        for(uint8_t i = 0; i < 10; i++)
+        {
+            lcd_backlight(0);
+            delay(1000000);
+            lcd_backlight(1);
             delay(1000000);
         }
         lcd_clear();
