@@ -39,6 +39,7 @@ BUILD_DIR = build
 C_SOURCES =  \
 Core/Src/main.c \
 Core/Src/lcd.c \
+Core/Src/i2c.c \
 Core/Src/system_stm32f10x.c \
 
 
